@@ -8,6 +8,21 @@ set(CMAKE_VERBOSE_MAKEFILE ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Option to enable ThreadSanitizer (for GCC/Clang)
+# Default OFF
+option(ENABLE_THREAD_SANITIZER "Enable ThreadSanitizer for detecting data races" OFF)
+
+if(ENABLE_THREAD_SANITIZER)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(STATUS "ThreadSanitizer enabled. Adding -fsanitize=thread and -g flags.")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=thread -g")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
+        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fsanitize=thread") # If you ever build shared libs
+    else()
+        message(WARNING "ENABLE_THREAD_SANITIZER is ON, but the current compiler (${CMAKE_CXX_COMPILER_ID}) might not support -fsanitize=thread. This flag is primarily for GCC and Clang.")
+    endif()
+endif()
+
 # Set VCPKG_INSTALLED_DIR variable
 if(WIN32)
     set(VCPKG_INSTALLED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../vcpkg_installed/x64-windows")
@@ -161,4 +176,3 @@ get_cmake_property(_variableNames VARIABLES)
 foreach(_variableName ${_variableNames})
     message(STATUS "${_variableName}=${${_variableName}}")
 endforeach()
-
