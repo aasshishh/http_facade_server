@@ -1,0 +1,238 @@
+image: ${CI_REGISTRY_IMAGE}:latest
+
+stages:
+  - build
+  - test
+  - deploy
+  - release
+  - canary
+
+variables:
+  BUILD_DIR: ${CI_PROJECT_DIR}/build
+  GTEST_COLOR: "0"
+  VCPKG_ROOT: ${CI_PROJECT_DIR}/vcpkg
+  CMAKE_BUILD_PARALLEL_LEVEL: "1"
+  VCPKG_DEFAULT_BINARY_CACHE: ${CI_PROJECT_DIR}/vcpkg_installed
+  VCPKG_FORCE_SYSTEM_BINARIES: "1"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  BOOST_VERSION: "1.88.0"
+  DEBIAN_FRONTEND: noninteractive
+  CC: /usr/bin/gcc
+  CXX: /usr/bin/g++
+
+services:
+  - name: redis:latest
+    alias: redis
+
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - ${CI_PROJECT_DIR}/vcpkg_installed/
+    - ${BUILD_DIR}/
+  policy: pull-push
+
+before_script:
+  - |
+    echo "Setting up a specific CMake version..."
+    CMAKE_VERSION="3.28.3" # Choose your desired CMake version
+    CMAKE_INSTALL_DIR="${CI_PROJECT_DIR}/cmake_custom"
+    mkdir -p ${CMAKE_INSTALL_DIR}
+    wget -qO- "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" | tar --strip-components=1 -xz -C ${CMAKE_INSTALL_DIR}
+    export PATH="${CMAKE_INSTALL_DIR}/bin:${PATH}"
+    echo "CMake version after custom installation:"
+    cmake --version
+  - |
+    echo "Installing system dependencies..."
+    # Note: We still install 'cmake' via apt-get below. This is because other tools or vcpkg
+    # might still look for a system cmake for some initial checks, even if our build uses the custom one.
+    # The PATH override ensures our build scripts use the custom version.
+    apt-get update && apt-get install -y \
+      redis-server \
+      libhiredis-dev \
+      build-essential \
+      ninja-build \
+      git \
+      cmake \
+      pkg-config \
+      netcat-openbsd \
+      curl \
+      unzip \
+      && rm -rf /var/lib/apt/lists/*
+  - |
+    cmake --version
+  - |
+    echo "Configuring git safe directory..."
+    git config --global --add safe.directory "${CI_PROJECT_DIR}"
+    git config --global --add safe.directory "${CI_PROJECT_DIR}/vcpkg"
+  - |
+    echo "Initializing git submodules..."
+    git submodule sync
+    git submodule update --init --recursive
+  - |
+    echo "Creating build directory: ${BUILD_DIR}"
+    mkdir -p ${BUILD_DIR}
+    chmod 777 ${BUILD_DIR}
+  - |
+    echo "System information:"
+    uname -a
+    cat /proc/cpuinfo | grep "processor" | wc -l
+    free -h
+    df -h
+    echo "Current directory: $(pwd)"
+    echo "Directory contents:"
+    ls -la
+  - |
+    echo "Verifying Ninja installation..."
+    ninja --version || echo "Ninja not found!"
+  - |
+    echo "Verifying vcpkg installation..."
+    echo "VCPKG_ROOT: ${VCPKG_ROOT}"
+    if [ ! -d "${VCPKG_ROOT}" ]; then
+      echo "Cloning vcpkg repository..."
+      git clone https://github.com/microsoft/vcpkg.git ${VCPKG_ROOT}
+    fi
+    echo "Checking vcpkg directory structure:"
+    ls -la ${VCPKG_ROOT}
+    echo "Checking scripts directory:"
+    ls -la ${VCPKG_ROOT}/scripts
+    echo "Checking buildsystems directory:"
+    ls -la ${VCPKG_ROOT}/scripts/buildsystems
+    if [ ! -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]; then
+      echo "vcpkg.cmake not found in local directory"
+      echo "Expected path: ${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      exit 1
+    fi
+    echo "vcpkg.cmake found successfully"
+  - |
+    echo "Bootstraping vcpkg..."
+    cd ${VCPKG_ROOT} && ./bootstrap-vcpkg.sh
+  - |
+    echo "Installing dependencies using vcpkg..."
+    if ! ${VCPKG_ROOT}/vcpkg install --triplet x64-linux; then
+      echo "vcpkg install failed. Dumping logs:"
+      echo "--- stdout-x64-linux.log ---"
+      cat "${CI_PROJECT_DIR}/vcpkg/buildtrees/detect_compiler/stdout-x64-linux.log" || echo "stdout log not found"
+      echo "--- config-x64-linux-rel-out.log ---"
+      cat "${CI_PROJECT_DIR}/vcpkg/buildtrees/detect_compiler/config-x64-linux-rel-out.log" || echo "config out log not found"
+      echo "--- config-x64-linux-rel-err.log ---"
+      cat "${CI_PROJECT_DIR}/vcpkg/buildtrees/detect_compiler/config-x64-linux-rel-err.log" || echo "config err log not found"
+      exit 1
+    fi
+  - |
+    echo "Waiting for Redis to be ready..."
+    while ! redis-cli -h ${REDIS_HOST} -p ${REDIS_PORT} ping; do
+      echo "Redis not ready yet, waiting..."
+      sleep 1
+    done
+    echo "Redis is ready!"
+
+build:
+  stage: build
+  script:
+    - cd ${BUILD_DIR}
+    - |
+      echo "Running CMake configuration..."
+      echo "Using vcpkg toolchain file: ${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      cmake ${CI_PROJECT_DIR} \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake \
+        -DCMAKE_VERBOSE_MAKEFILE=ON \
+        -DVCPKG_TARGET_TRIPLET=x64-linux \
+        -DVCPKG_INSTALLED_DIR=${VCPKG_DEFAULT_BINARY_CACHE} \
+        -G Ninja
+    - |
+      echo "Building with ${CMAKE_BUILD_PARALLEL_LEVEL} parallel jobs..."
+      cmake --build . --config Release --verbose -j${CMAKE_BUILD_PARALLEL_LEVEL}
+  artifacts:
+    paths:
+      - ${BUILD_DIR}/
+      - ${BUILD_DIR}/CMakeFiles/CMakeOutput.log
+      - ${BUILD_DIR}/CMakeFiles/CMakeError.log
+    expire_in: 1 week
+
+test:
+  stage: test
+  dependencies:
+    - build  # Explicitly depend on build stage
+  script:
+    - |
+      if [ ! -d "build" ]; then
+        echo "Creating build directory..."
+        mkdir -p build
+      fi
+    - cd build
+    - |
+      echo "Setting up test environment..."
+      mkdir -p tests
+      mkdir -p tests-results
+      # Copy required DLLs on Windows
+      if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+        cp ../vcpkg_installed/x64-windows/bin/*.dll tests/
+      fi
+    - |
+      echo "Running tests..."
+      ctest --output-on-failure -V --output-junit test-results/junit.xml
+  artifacts:
+    when: always
+    reports:
+      junit: build/test-results/junit.xml
+    paths:
+      - build/tests/
+      - build/test-results/
+      - build/CMakeFiles/CMakeError.log
+      - build/CMakeFiles/CMakeOutput.log
+    expire_in: 1 week
+
+deploy:
+  stage: deploy
+  script:
+    - |
+      echo "Starting deploy stage..."
+      echo "Current directory: $(pwd)"
+      echo "Build directory contents:"
+      ls -la ${BUILD_DIR}
+    - |
+      echo "Creating deploy directory..."
+      mkdir -p ${CI_PROJECT_DIR}/deploy
+      echo "Copying binary..."
+      cp ${BUILD_DIR}/backendify ${CI_PROJECT_DIR}/deploy/
+      cd ${CI_PROJECT_DIR}/deploy
+      echo "Creating release package..."
+      tar czf backendify-release.tar.gz backendify
+      echo "Deploy directory contents:"
+      ls -la
+  artifacts:
+    paths:
+      - deploy/backendify-release.tar.gz
+    expire_in: 1 month
+  dependencies:
+    - build
+    - test
+  environment:
+    name: production
+
+
+###################################################
+## do not remove or edit this block, it is
+## required for us to accept your submission!
+release:
+  stage: release
+  image: docker:stable
+  services:
+  - docker:dind
+  before_script:
+  - until docker version ; do sleep 1; done
+  - echo ${CI_JOB_TOKEN} | docker login -u gitlab-ci-token --password-stdin ${CI_REGISTRY}
+  script:
+  - docker build --pull -t ${CI_REGISTRY_IMAGE} .
+  - docker push ${CI_REGISTRY_IMAGE}
+
+canary:
+  stage: canary
+  image: registry.gitlab.com/autoiterativesolutions/src/monolith/ais-client:master
+  before_script: []  # Override the global before_script
+  script: 
+    - /usr/bin/ais-client
+##
+###################################################
