@@ -3,13 +3,12 @@ add_executable(backendify_test
     test_main.cpp
     test_utils.cpp
     test_inmemorycache.cpp
-    # test_backendify.cpp
+    test_backendify.cpp
     ${PROJECT_SOURCE_DIR}/src/cache/InMemoryCache.cpp
     ${PROJECT_SOURCE_DIR}/src/cache/RedisCache.cpp
     ${PROJECT_SOURCE_DIR}/src/core/Backendify.cpp
-    ${PROJECT_SOURCE_DIR}/src/core/BeastHttpServer.cpp
     ${PROJECT_SOURCE_DIR}/src/core/CircuitBreaker.cpp
-    ${PROJECT_SOURCE_DIR}/src/core/HttpServerSession.cpp
+    ${PROJECT_SOURCE_DIR}/src/core/ThreadLocalTime.cpp
     ${PROJECT_SOURCE_DIR}/src/metrics/DummyStatsDClient.cpp
     ${PROJECT_SOURCE_DIR}/src/metrics/StatsDClient.cpp
     ${PROJECT_SOURCE_DIR}/src/logging/ConsoleLogger.cpp
@@ -20,9 +19,9 @@ find_package(GTest CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(CURL CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(httplib CONFIG REQUIRED)
 find_package(hiredis CONFIG REQUIRED)
 find_package(Threads REQUIRED)
-find_package(Boost REQUIRED COMPONENTS system)
 
 # Set compile options for MSVC
 if(MSVC)
@@ -48,9 +47,9 @@ target_link_libraries(backendify_test PRIVATE
     OpenSSL::Crypto
     CURL::libcurl
     nlohmann_json::nlohmann_json
+    httplib::httplib
     hiredis::hiredis
     Threads::Threads
-    Boost::system
     $<$<CXX_COMPILER_ID:MSVC>:ws2_32>
 )
 

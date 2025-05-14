@@ -54,7 +54,6 @@ StatsDClient::StatsDClient(
     }
 }
 
-
 // Destructor
 StatsDClient::~StatsDClient() {
     // No need to explicitly close socket, unique_ptr manages UDPSender lifetime

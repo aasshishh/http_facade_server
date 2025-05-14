@@ -7,8 +7,6 @@ ENV VCPKG_ROOT=/app/vcpkg
 ENV VCPKG_DEFAULT_BINARY_CACHE=/app/vcpkg_installed
 ENV CMAKE_BUILD_PARALLEL_LEVEL=2
 ENV VCPKG_FORCE_SYSTEM_BINARIES=1
-ENV CC=/usr/bin/gcc
-ENV CXX=/usr/bin/g++
 ENV REDIS_HOST=localhost
 ENV REDIS_PORT=6379
 
@@ -34,15 +32,6 @@ RUN apt-get update && \
     redis-server \
     netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
-
-# Remove the old version of CMake
-RUN apt-get remove -y cmake
-
-# Install the latest version of CMake
-RUN curl -L https://github.com/Kitware/CMake/releases/download/v3.30.5/cmake-3.30.5-linux-x86_64.tar.gz | tar --strip-components=1 -xz -C /usr/local
-
-# Verify the installed version
-RUN cmake --version
 
 # Create a non-root user first
 RUN useradd -m -s /bin/bash builder && \

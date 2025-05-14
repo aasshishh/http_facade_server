@@ -6,7 +6,6 @@
 #include <regex>
 #include <string>
 #include <sstream>
-#include <thread>
 
 #include "../models/BackendUrlInfo.hpp"
 
@@ -68,9 +67,6 @@ public:
     // Server Congifuration
     int frontend_port;
     int number_of_threads_per_core;
-    unsigned int num_io_threads;
-    int max_response_queue_size;  // Max size for HttpServerSession's response queue
-    int queue_multiply_factor;
 
     // Logging Level
     LogUtils::LogLevel log_level;
@@ -101,10 +97,7 @@ public:
         read_request_timeout_in_microseconds = 50000;
         backend_servers_circuit_breaker_cool_off_duration_in_millis = 10;
         number_of_threads_per_core = 2;
-        drop_sla_timeout_requests = true; // Default to current behavior (send 504)
-        max_response_queue_size = 100000;
-        num_io_threads = 2;
-        queue_multiply_factor = 4; // multiplying factor per thread based on processing power
+        drop_sla_timeout_requests = false; // Default to current behavior (send 504)
 
         // Configurable from Config
         use_redis = true;
@@ -119,27 +112,14 @@ public:
         metrics_send_interval_in_millis = 1000;
     }
 
-    void updateDeductions() {
-        // Use a reasonable number of threads for I/O operations,
-        // can be tuned based on expected load and number of backend calls.
-        // For a server, you might want more threads than just hardware_concurrency().
-        num_io_threads = std::thread::hardware_concurrency() * number_of_threads_per_core;
-        if (num_io_threads == 0) num_io_threads = 2; // Default if detection fails
-
-        max_response_queue_size = num_io_threads * (server_sla_in_micros / request_average_processing_time_in_micros) * queue_multiply_factor;
-    }
-
-    std::string to_string() const {
+    std::string to_string() const {  // Made const for better usage
         std::stringstream ss;
         ss << "// --- Configuration Params Start --- //" << std::endl
             << "frontend_port: " << frontend_port << std::endl
             << "number_of_threads_per_core: " << number_of_threads_per_core << std::endl
-            << "total num_io_threads: " << num_io_threads << std::endl
             << "server_sla_in_micros: " << server_sla_in_micros << std::endl
             << "request_average_processing_time_in_micros: " << request_average_processing_time_in_micros << std::endl
             << "drop_sla_timeout_requests: " << std::boolalpha << drop_sla_timeout_requests << std::noboolalpha << std::endl
-            << "max_response_queue_size: " << max_response_queue_size << std::endl
-            << "queue_multiply_factor: " << queue_multiply_factor << std::endl
             << "// --- Cache Configuration --- //" << std::endl
             << "use_redis: " << std::boolalpha << use_redis << std::noboolalpha << std::endl
             << "redis_host: " << redis_host << std::endl

@@ -2,10 +2,8 @@
 #define UDP_SENDER_HPP
 
 #ifdef _WIN32
-#ifndef NOMINMAX
 #define NOMINMAX
-#endif
-
+// Define WIN32_LEAN_AND_MEAN to exclude rarely-used stuff from Windows headers
 #define WIN32_LEAN_AND_MEAN
 #include <io.h>
 #include <winsock2.h>

@@ -55,15 +55,14 @@
 # DESIGN DECISIONS
 
 **Dependencies:**
-*   *Boost C++ Libraries*: [Boost C++ Libraries](https://www.boost.org/) were selected for their robust, feature-rich, and peer-reviewed components, forming the foundation of the application's asynchronous networking capabilities.
-    *   *`Boost.Asio`*: The cornerstone of the asynchronous architecture. It provides a powerful and versatile model for network and low-level I/O programming, using an `io_context` to manage operations and dispatch completion handlers. Its flexible threading options, including strands, are leveraged for efficient and safe concurrent programming.
-    *   *`Boost.Beast`*: A header-only library built upon Boost.Asio, providing low-level HTTP/1 protocol support. It's used for constructing, parsing, and transmitting HTTP messages, integrating seamlessly with the Asio asynchronous model.
-*   *`nlohmann/json`*: Chosen for its modern C++ approach, intuitive API, and comprehensive features for JSON parsing and serialization.
-*   *`hiredis`*: The official, lightweight C client library for Redis, selected for its directness and performance in implementing the `RedisCache`.
-*   *`googletest`*: A widely-adopted C++ testing framework, employed for its rich assertion set and features for writing comprehensive unit tests.
-*   *`vcpkg`*: Utilized as the C++ package manager to simplify the acquisition and management of third-party library dependencies across different development and build environments.
+*    *`cpp-httplib`:* Selected for its simplicity, ease of integration (header-only), and straightforward API for both HTTP server and client functionalities. Its blocking, thread-per-request model was deemed suitable for the initial synchronous implementation, offering a good balance between development speed and reasonable performance for moderate loads. It provided a quick way to get a functional HTTP server and client up and running without introducing complex asynchronous programming models early on.
+*    *`nlohmann/json`:* Chosen for its intuitive API for JSON parsing and serialization.
+*    *`hiredis`:* The official C client library for Redis, used by the `RedisCache` implementation.
+*    *`googletest`:* Employed as the framework for writing and running unit tests.
+*    *`vcpkg`:* Used for managing C++ library dependencies across platforms.
 
 **Third Party Libs:**
+* *`cpp-httplib`*
 * *`nlohmann/json.hpp`*
 * *`[UDPSender.hpp](https://github.com/vthiery/cpp-statsd-client/blob/master/include/cpp-statsd-client/UDPSender.hpp)`*
 
@@ -111,26 +110,19 @@
 * A simple `time-based circuit breaker` is implemented: if a backend returns a 503 Service Unavailable, subsequent calls to that specific backend are blocked for a specific time period *(default 10 milliseconds)* to allow recovery, returning a `504` to the client during this cooldown.
 
 **Performance and Concurrency:**
-*   **Fully Asynchronous, Event-Driven Architecture (Boost.Asio & Boost.Beast):** The application has been re-architected to leverage a fully asynchronous, event-driven model using Boost.Asio for the core I/O event loop and Boost.Beast for HTTP protocol handling. This marks a fundamental shift from a thread-per-request model.
-    *   **Event Loop (`io_context`):** A central `boost::asio::io_context` manages all asynchronous operations. A pool of worker threads runs this `io_context`, allowing for concurrent processing of I/O events.
-    *   **Non-Blocking I/O:** All network operations (accepting client connections, reading requests, writing responses, making backend API calls) are non-blocking. Operations return immediately, and their completion is handled by callbacks (completion handlers) posted to the `io_context`. This allows a small number of threads to efficiently manage a large number of concurrent connections and I/O operations.
-    *   **Session-Based State Management:** Each client connection (`HttpServerSession`) and each backend API call (`AsyncHttpClientSession`) manages its own state through a series of chained asynchronous operations and their completion handlers. This effectively creates a state machine for each concurrent operation, pausing when waiting for I/O and resuming when the operation completes.
-    *   **Reduced Threading Overhead:** Compared to a thread-per-request model, this architecture significantly reduces the number of threads required, leading to lower context-switching overhead and reduced memory consumption per connection.
-    *   **Scalability:** This model is inherently more scalable, capable of handling a higher degree of I/O concurrency.
-*   **Thread Pool for `io_context`:** The number of threads servicing the `io_context` is configurable (via `number_of_threads_per_core` in `AppConfig.hpp`, multiplied by `std::thread::hardware_concurrency()`), aiming to match available CPU cores for optimal processing of I/O completion handlers.
-*   **SLA-Aware Response Queuing (Session-Level Rate Limiting):** Each `HttpServerSession` employs an internal queue for outgoing responses, acting as a session-level rate limiter or load shedding mechanism. This queue allows `Backendify` to process incoming requests and generate responses potentially faster than they can be written to the network, which is beneficial for HTTP pipelining and handling bursty traffic. The queue has a configurable maximum size (`max_response_queue_size`). Critically, if this queue becomes full, the oldest (and thus closest to potential SLA violation) responses are discarded to make space for newer ones. This strategy prioritizes fresh requests, increasing the likelihood of meeting the overall SLA for a higher percentage of client interactions, especially under sustained load.
-*   **Asynchronous Backend Client:** The `AsyncHttpClientSession` handles calls to backend servers asynchronously, including DNS resolution, connection, request writing, and response reading, all managed by the `io_context`.
-*   **Shared Resource Safety:** Shared resources like the logger, cache, and metrics client are designed to be safe for concurrent access from multiple completion handlers running on different `io_context` threads, primarily through thread-safe implementations or careful synchronization where necessary (e.g., `StatsDClient`'s internal queue).
-*   **Timeouts:** Asynchronous timers (`boost::asio::steady_timer`) are used extensively to manage timeouts for client connections, individual backend API calls, and even specific asynchronous write operations within `HttpServerSession` to prevent indefinite blocking.
+* The HTTP server (`httplib::Server`) is configured to use its built-in thread pool (`httplib::ThreadPool`) to handle multiple incoming client requests concurrently. Each incoming request is typically assigned to a dedicated thread from this pool for the duration of its processing.
+* The number of threads in the pool is configurable (via `number_of_threads_per_core` in `AppConfig.hpp`, multiplied by `std::thread::hardware_concurrency()`) and defaults to a value based on the available hardware cores. This aims to maximize CPU utilization without excessive context switching.
+* **Synchronous Operations:** Within each request-handling thread, operations such as backend API calls (`httplib::Client::Get`) are performed synchronously (blocking). This means the thread waits for the backend response before proceeding.
+* Shared resources accessed by concurrent request handlers (e.g., logger, cache, metrics client) have been implemented to be thread-safe (using mutexes where necessary) to prevent race conditions and ensure data integrity under load.
+* Each thread maintains `one client instance per backend`, stored in `thread_local` storage.
+* The primary contention point for shared resources under high load is expected to be the internal mutex within the single `UDPSender` instance used for batching metrics, though this is likely minor unless metric generation is extremely high.
+* Backend API calls made via `httplib::Client` are configured with `connection_timeout_in_microseconds` and `read_request_timeout_in_microseconds` to prevent indefinite blocking on unresponsive backends.
 
 **Testing Strategy:**
 * Unit tests are implemented using the Google Test framework (`gtest`).
 * Tests focus on individual components like utility functions (date parsing, configuration loading), cache implementations, and backend response parsing logic.
 * Dependencies on external services are managed during testing by using the `InMemoryCache` (instead of Redis) and the `DummyStatsDClient` (instead of a real StatsD server).
 * Tests for backend interactions often use mock HTTP servers (provided by `httplib`'s test utilities or custom setups) to simulate V1 and V2 backend responses, including error cases.
-
-**Limitations:**
-*   **HTTP Only (No HTTPS):** The application currently supports only HTTP for incoming client connections and outgoing backend connections. Implementing HTTPS, while beneficial for security, would introduce additional complexity (e.g., certificate management, SSL/TLS handshake overhead) and is not part of the current scope but could be considered for future enhancements if required.
 
 **Debugging / Performance Tuning in Production:**
 *   **Acknowledge Constraints:** Production / Canary offers limited resources. Debugging relies heavily on indirect observation and metrics.
@@ -148,17 +140,3 @@
 *   **Load Testing in Staging:** Simulate production load and unreliability (e.g., slow/failing backends, unavailable Redis) in a staging environment with identical resource constraints. This helps trigger OOMs or performance bottlenecks before hitting production.
 *   **Local Profiling:** Before deploying significant changes, use local profiling tools (Valgrind/Massif for memory, perf for CPU) under simulated load/error conditions to identify potential leaks or performance hotspots that might only manifest under pressure.
 *   **Iterative Configuration Tuning:** Based on metrics and monitoring, adjust configuration parameters (e.g., thread count, backend timeouts, `InMemoryCache` size) and redeploy to observe the impact on stability and performance.
-*   **Optimize CPU-Intensive Operations:** Identify and optimize CPU-bound tasks within I/O completion handlers to prevent starving the event loop. Areas to review include:
-    *   Manual query parameter parsing loops.
-    *   JSON parsing (`nlohmann::json::parse`) and serialization (`.dump()`).
-    *   Complex logic within cache interactions.
-    *   Consider offloading very heavy CPU work to a separate thread pool if necessary.
-*   **Minimize String Manipulation Overhead:** Reduce frequent string allocations and copies, which can impact performance.
-    *   Utilize `std::string_view` where appropriate for non-owning string access.
-    *   Pre-allocate string capacity (e.g., with `reserve()`) when building strings if the approximate size is known.
-    *   Evaluate efficient string formatting alternatives (e.g., `fmtlib` or C++20 `std::format`) for performance-critical paths.
-*   **Analyze Mutex Contention:** While current mutex usage (e.g., for `active_client_sessions_` or `tripped_backends_`) is likely not a bottleneck, monitor for potential contention under extreme load. If identified by profiling, explore more granular locking or concurrent data structures.
-*   **Leverage Profiling Tools:** Systematically use profiling tools to pinpoint actual performance bottlenecks ("hot spots") rather than relying on assumptions.
-    *   **Linux:** `perf` (for CPU, events), `gprof` (call graph), Valgrind (`callgrind` for CPU, `cachegrind` for cache simulation, `Massif` for heap).
-    *   **Windows:** Visual Studio's built-in performance profiler, Intel VTune Profiler.
-    *   Focus optimization efforts on areas identified by these tools for the most significant impact.

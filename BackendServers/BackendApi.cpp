@@ -117,7 +117,7 @@ int main(int argc, char** argv) {
             res.set_content(json_response, "application/x-company-v1");
             res.status = 200; // OK
         } else if (company_id == "1234567") {
-            json_response = R"({"cn": "ABCDEFG", "created_on" :"2020-06-30T06:23:14Z", "closed_on" :"2050-06-30T06:23:14Z"})"; // Use raw string literal for JSON
+            json_response = R"({"cn": "ABCDEFG", "created_on" :"1786-06-30T06:23:14Z", "closed_on" :"2050-06-30T06:23:14Z"})"; // Use raw string literal for JSON
             // Set the response content type to application/x-company-v2
             res.set_content(json_response, "application/x-company-v1");
             res.status = 200; // OK

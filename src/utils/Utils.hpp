@@ -206,9 +206,6 @@ public:
         }
         // --- End Map Population ---
 
-        // update the configs
-        config.updateDeductions();
-
         return config;
     }
 
@@ -343,10 +340,6 @@ public:
     
         if (std::regex_match(url, match, Constants::url_regex)) {
             std::string scheme = match[1].str();
-            if (scheme == "https") {
-                std::cerr << "Error: HTTPS backend URLs are not supported: " << url << std::endl;
-                return false; // Reject HTTPS URLs
-            }
             is_https = (scheme == "https");
             host = match[2].str();
     
@@ -375,27 +368,6 @@ public:
         }
         std::cerr << "Error: URL format does not match expected pattern: " << url << std::endl;
         return false; // URL format doesn't match
-    }
-
-    static std::string urlDecode(const std::string& str) {
-        std::ostringstream decoded;
-        for (size_t i = 0; i < str.length(); ++i) {
-            if (str[i] == '%' && i + 2 < str.length()) {
-                std::istringstream hex(str.substr(i + 1, 2));
-                int value;
-                if (hex >> std::hex >> value) {
-                    decoded << static_cast<char>(value);
-                    i += 2;
-                } else {
-                    decoded << '%';
-                }
-            } else if (str[i] == '+') {
-                decoded << ' ';
-            } else {
-                decoded << str[i];
-            }
-        }
-        return decoded.str();
     }
 };
 

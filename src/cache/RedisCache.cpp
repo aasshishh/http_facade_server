@@ -166,8 +166,5 @@ bool RedisCache::exists(const std::string& key) {
 }
 
 bool RedisCache::isConnected() const {
-    // Although it's a simple read, locking ensures we don't race with
-    // connect/disconnect operations modifying redis_context_.
-    std::lock_guard<std::mutex> lock(mutex_);
     return redis_context_ != nullptr;
 }

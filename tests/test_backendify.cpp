@@ -8,10 +8,6 @@
 #include "gtest/gtest.h"
 #include "gmock/gmock.h"
 
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/executor_work_guard.hpp>
-#include <boost/beast/http.hpp>
-
 #include "../src/config/AppConfig.hpp"
 #include "../src/core/Backendify.hpp"
 #include "../src/interfaces/CacheInterface.hpp"
@@ -61,20 +57,12 @@ protected:
     MockCache* mock_cache{nullptr};         // Change to raw pointer
     MockStatsDClient* mock_statsd{nullptr}; // Change to raw pointer
     MockLogger* mock_logger{nullptr}; // Change to raw pointer
-    boost::asio::io_context ioc_;
-    std::unique_ptr<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>> work_guard_;
-    std::vector<std::thread> ioc_threads_;
     AppConfig config;
     std::atomic<bool> server_ready{false};
     int fake_server_port = 9001; // Default fake backend port
 
     void SetUp() override {
         updateBackendUrls();
-
-        // Start io_context threads
-        work_guard_ = std::make_unique<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>(boost::asio::make_work_guard(ioc_));
-        ioc_threads_.emplace_back([this]() { ioc_.run(); });
-        ioc_threads_.emplace_back([this]() { ioc_.run(); }); // Start a couple of threads for tests
 
         // Start the fake server
         fake_server = std::make_unique<httplib::Server>();
@@ -88,13 +76,6 @@ protected:
         }
         if (server_thread.joinable()) {
             server_thread.join();
-        }
-
-        // Stop io_context threads
-        work_guard_.reset();
-        ioc_.stop();
-        for (auto& t : ioc_threads_) {
-            if (t.joinable()) t.join();
         }
         // No need to delete mock_cache or mock_statsd as they're managed by Backendify
     }
@@ -137,46 +118,38 @@ protected:
         // Add more routes as needed for different test cases
     }
 
-// Helper to simulate a client request by directly calling Backendify's processing methods
-    // Returns a Beast response object
-    boost::beast::http::response<boost::beast::http::string_body> 
-    simulateRequest(Backendify& backendify, const std::string& target_path, boost::beast::http::verb method = boost::beast::http::verb::get) {
-        boost::beast::http::request<boost::beast::http::string_body> req{method, target_path, 11}; // HTTP/1.1
-        req.set(boost::beast::http::field::host, "localhost");
-        req.set(boost::beast::http::field::user_agent, "test-client");
-        req.prepare_payload();
+    // Helper to simulate a client request to Backendify's server
+    httplib::Result simulateRequest(Backendify& backendify, const std::string& path) {
+        auto test_server = std::make_unique<httplib::Server>();
+        backendify.setupServer(*test_server);
 
-        std::promise<boost::beast::http::response<boost::beast::http::string_body>> promise;
-        auto future = promise.get_future();
-
-        auto send_response_cb = 
-            [&promise](std::optional<boost::beast::http::response<boost::beast::http::string_body>> res) {
-                if (res) {
-                    promise.set_value(std::move(*res));
-                } else {
-                    throw std::runtime_error("Received empty response in test simulation");
-                }
-            };
-
-        // Basic routing for tests
-        if (target_path.rfind("/company", 0) == 0) { // starts_with
-            backendify.processCompanyRequest(std::move(req), std::chrono::steady_clock::now(), send_response_cb);
-        } else if (target_path == "/status") {
-            backendify.processStatusRequest(send_response_cb);
-        } else {
-            // Simulate a 404 for unhandled paths in the test context
-            boost::beast::http::response<boost::beast::http::string_body> res_404{boost::beast::http::status::not_found, req.version()};
-            res_404.set(boost::beast::http::field::content_type, "text/plain");
-            res_404.body() = "Not Found in test simulation";
-            res_404.prepare_payload();
-            promise.set_value(std::move(res_404));
+        // Need to run this server temporarily to handle one request
+        int temp_port = 10000 + (rand() % 10000); // Find an available port
+        while (!test_server->bind_to_port("127.0.0.1", temp_port)) {
+             temp_port++;
+             if (temp_port > 30000) throw std::runtime_error("Could not find port for simulateRequest");
         }
 
-        // Wait for the promise to be fulfilled. Add a timeout for safety.
-        if (future.wait_for(std::chrono::seconds(5)) == std::future_status::timeout) {
-            throw std::runtime_error("Simulated request timed out");
+        std::promise<void> server_started;
+        std::thread temp_server_thread([&]() {
+            server_started.set_value();
+            test_server->listen_after_bind();
+        });
+
+        server_started.get_future().wait(); // Wait until server is bound
+
+        httplib::Client test_client("127.0.0.1", temp_port);
+        test_client.set_connection_timeout(1);
+        test_client.set_read_timeout(1);
+        auto res = test_client.Get(path.c_str());
+
+        // Ensure cleanup
+        if (temp_server_thread.joinable()) {
+            test_server->stop();
+            temp_server_thread.join();
         }
-        return future.get();
+
+        return res;
     }
 
     // Helper to create Backendify instance
@@ -191,12 +164,11 @@ protected:
         mock_logger = mock_logger_ptr.get();
         
         return Backendify(
-            ioc_, // Pass the io_context
             std::move(mock_cache_ptr),
             std::move(mock_statsd_ptr),
             config,
             mock_logger_ptr
-        );  
+        );
     }
 
 private:
@@ -205,14 +177,14 @@ private:
             for (int p = fake_server_port; p < fake_server_port + 5; ++p) {
                 if (fake_server->bind_to_port("127.0.0.1", p)) {
                     fake_server_port = p;
-                    updateBackendUrls(); // Update config *after* port is confirmed
+                    updateBackendUrls();
                     server_ready = true;
                     fake_server->listen_after_bind();
                     return;
                 }
             }
             std::cerr << "Failed to bind fake server to any port" << std::endl;
-            server_ready = true; // Still set to true to unblock waitForServer, but it will fail later
+            server_ready = true;
         });
 
         waitForServer();
@@ -268,18 +240,21 @@ TEST_F(BackendifyTest, HandleCompanyRequestMissingParams) {
 
     // Test case 1: Missing ID
     auto result = simulateRequest(backendify, "/company?country_iso=US");
-    ASSERT_EQ(result.result_int(), 400); // Beast uses result_int() for status
-    EXPECT_EQ(result.body(), R"({"error": "Missing required parameters"})");
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status, 400);
+    EXPECT_EQ(result->body, R"({"error": "Missing required parameters"})");
 
     // Test case 2: Missing country_iso
     result = simulateRequest(backendify, "/company?id=123");
-    ASSERT_EQ(result.result_int(), 400);
-    EXPECT_EQ(result.body(), R"({"error": "Missing required parameters"})");
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status, 400);
+    EXPECT_EQ(result->body, R"({"error": "Missing required parameters"})");
 
     // Test case 3: Missing both parameters
     result = simulateRequest(backendify, "/company?");
-    ASSERT_EQ(result.result_int(), 400);
-    EXPECT_EQ(result.body(), R"({"error": "Missing required parameters"})");
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status, 400);
+    EXPECT_EQ(result->body, R"({"error": "Missing required parameters"})");
 }
 
 // Update all other test cases to use the helper method:
@@ -288,6 +263,7 @@ TEST_F(BackendifyTest, HandleCompanyRequestInvalidCountry) {
     std::string isoCode = "XX";
     std::string cacheKey = companyId + ":" + isoCode;
 
+    // Create Backendify with unique_ptr
     Backendify backendify = createBackendify();
 
     EXPECT_CALL(*mock_cache, get(cacheKey))
@@ -298,8 +274,9 @@ TEST_F(BackendifyTest, HandleCompanyRequestInvalidCountry) {
 
     auto result = simulateRequest(backendify, "/company?id=" + companyId + "&country_iso=" + isoCode);
 
-    ASSERT_EQ(result.result_int(), 404);
-    EXPECT_EQ(result.body(), R"({"error": "Unconfigured country_iso"})");
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status, 404);
+    EXPECT_EQ(result->body, R"({"error": "Unconfigured country_iso"})");
 }
 
 TEST_F(BackendifyTest, HandleCompanyRequestCacheHit) {
@@ -316,8 +293,9 @@ TEST_F(BackendifyTest, HandleCompanyRequestCacheHit) {
         .WillOnce(testing::Return(cachedResponse));
     auto result = simulateRequest(backendify, "/company?id=" + companyId + "&country_iso=" + isoCode);
 
-    ASSERT_EQ(result.result_int(), 200);
-    EXPECT_EQ(result.body(), cachedResponse);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status, 200);
+    EXPECT_EQ(result->body, cachedResponse);
 }
 
 TEST_F(BackendifyTest, HandleCompanyRequestCacheMissBackendSuccessV2) {
@@ -340,8 +318,10 @@ TEST_F(BackendifyTest, HandleCompanyRequestCacheMissBackendSuccessV2) {
 
     auto result = simulateRequest(backendify, "/company?id=" + companyId + "&country_iso=" + isoCode);
 
-    ASSERT_EQ(result.result_int(), 200);
-    auto actual = json::parse(result.body());
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status, 200);
+    
+    auto actual = json::parse(result->body);
     EXPECT_EQ(actual, expected);
 }
 
@@ -367,8 +347,10 @@ TEST_F(BackendifyTest, HandleCompanyRequestCacheMissBackendSuccessV1Inactive) {
 
     auto result = simulateRequest(backendify, "/company?id=" + companyId + "&country_iso=" + isoCode);
 
-    ASSERT_EQ(result.result_int(), 200);
-    auto actual = json::parse(result.body());
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status, 200);
+    
+    auto actual = json::parse(result->body);
     EXPECT_EQ(actual, expected);
 }
 
@@ -388,8 +370,9 @@ TEST_F(BackendifyTest, HandleCompanyRequestCacheMissBackendNotFound) {
 
     auto result = simulateRequest(backendify, "/company?id=" + companyId + "&country_iso=" + isoCode);
 
-    ASSERT_EQ(result.result_int(), 404);
-    EXPECT_EQ(result.body(), R"({"error": "Not Found from backend"})");
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status, 404);
+    EXPECT_EQ(result->body, R"({"error": "Not Found"})");
 }
 
 TEST_F(BackendifyTest, HandleCompanyRequestCacheMissBackendError) {
@@ -404,12 +387,13 @@ TEST_F(BackendifyTest, HandleCompanyRequestCacheMissBackendError) {
 
     auto result = simulateRequest(backendify, "/company?id=" + companyId + "&country_iso=" + isoCode);
 
-    ASSERT_EQ(result.result_int(), 502);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status, 504);
     
     // Parse and compare JSON instead of raw string comparison
-    auto actual = json::parse(result.body());
+    auto actual = json::parse(result->body);
     json expected = {
-        {"error", "Bad Gateway - Upstream Server Error"}
+        {"error", "Gateway Timeout"}
     };
     EXPECT_EQ(actual, expected);
 }
@@ -421,8 +405,9 @@ TEST_F(BackendifyTest, HandleStatusRequest) {
 
     auto result = simulateRequest(backendify, "/status");
 
-    ASSERT_EQ(result.result_int(), 200);
-    EXPECT_EQ(result.body(), "Frontend Server is running (Beast)");
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status, 200);
+    EXPECT_EQ(result->body, "Frontend Server is running");
 }
 
 TEST_F(BackendifyTest, HandleUnhandledRoute) {
@@ -431,7 +416,7 @@ TEST_F(BackendifyTest, HandleUnhandledRoute) {
 
     auto result = simulateRequest(backendify, "/unhandled/path");
 
-    ASSERT_EQ(result.result_int(), 404);
-    // The body will be "Not Found in test simulation" due to the simulateRequest helper's else branch
-    EXPECT_EQ(result.body(), "Not Found in test simulation"); 
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status, 404);
+    EXPECT_EQ(result->body, "Not Found");
 }

@@ -1,14 +1,13 @@
 {
     "name": "backendify",
     "version": "0.1.0",
-    "builtin-baseline": "d8ad13c401b30c2836d00b8923c9127f05f591c7",
+    "builtin-baseline": "0c4cf19224a049cf82f4521e29e39f7bd680440c",
     "dependencies": [
         "curl",
         "openssl",
         "gtest",
         "nlohmann-json",
-        "hiredis",
-        "boost-beast",
-        "boost-asio"
+        "cpp-httplib",
+        "hiredis"
     ]
 }

@@ -16,10 +16,6 @@ variables:
   VCPKG_FORCE_SYSTEM_BINARIES: "1"
   REDIS_HOST: "redis"
   REDIS_PORT: "6379"
-  BOOST_VERSION: "1.88.0"
-  DEBIAN_FRONTEND: noninteractive
-  CC: /usr/bin/gcc
-  CXX: /usr/bin/g++
 
 services:
   - name: redis:latest
@@ -34,33 +30,19 @@ cache:
 
 before_script:
   - |
-    echo "Setting up a specific CMake version..."
-    CMAKE_VERSION="3.28.3" # Choose your desired CMake version
-    CMAKE_INSTALL_DIR="${CI_PROJECT_DIR}/cmake_custom"
-    mkdir -p ${CMAKE_INSTALL_DIR}
-    wget -qO- "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" | tar --strip-components=1 -xz -C ${CMAKE_INSTALL_DIR}
-    export PATH="${CMAKE_INSTALL_DIR}/bin:${PATH}"
-    echo "CMake version after custom installation:"
-    cmake --version
-  - |
     echo "Installing system dependencies..."
-    # Note: We still install 'cmake' via apt-get below. This is because other tools or vcpkg
-    # might still look for a system cmake for some initial checks, even if our build uses the custom one.
-    # The PATH override ensures our build scripts use the custom version.
     apt-get update && apt-get install -y \
       redis-server \
       libhiredis-dev \
       build-essential \
-      ninja-build \
-      git \
       cmake \
+      ninja-build \
       pkg-config \
       netcat-openbsd \
       curl \
       unzip \
+      git \
       && rm -rf /var/lib/apt/lists/*
-  - |
-    cmake --version
   - |
     echo "Configuring git safe directory..."
     git config --global --add safe.directory "${CI_PROJECT_DIR}"
@@ -82,9 +64,6 @@ before_script:
     echo "Current directory: $(pwd)"
     echo "Directory contents:"
     ls -la
-  - |
-    echo "Verifying Ninja installation..."
-    ninja --version || echo "Ninja not found!"
   - |
     echo "Verifying vcpkg installation..."
     echo "VCPKG_ROOT: ${VCPKG_ROOT}"
@@ -108,7 +87,7 @@ before_script:
     echo "Bootstraping vcpkg..."
     cd ${VCPKG_ROOT} && ./bootstrap-vcpkg.sh
   - |
-    echo "Installing dependencies using vcpkg..."
+    echo "Installing dependencies..."
     if ! ${VCPKG_ROOT}/vcpkg install --triplet x64-linux; then
       echo "vcpkg install failed. Dumping logs:"
       echo "--- stdout-x64-linux.log ---"

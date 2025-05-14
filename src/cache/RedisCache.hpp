@@ -39,5 +39,5 @@ private:
     const AppConfig& config_;
     std::shared_ptr<ILogger> logger_;
     redisContext* redis_context_;
-    mutable std::mutex mutex_; // Made mutable to allow locking in const methods
+    std::mutex mutex_;
 }; 

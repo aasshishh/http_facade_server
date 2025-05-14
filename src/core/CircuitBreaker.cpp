@@ -21,4 +21,5 @@ void CircuitBreaker::trip(const std::string& backendUrl, std::chrono::millisecon
     std::lock_guard<std::mutex> lock(mutex_);
     tripped_backends_[backendUrl] = std::chrono::steady_clock::now() + coolDownDuration;
     logger_->error("Tripping circuit breaker for backend: " + backendUrl + " for " + std::to_string(coolDownDuration.count()) + "ms");
+    // Note: The metric increment is now done in isTripped when access is denied.
 }
