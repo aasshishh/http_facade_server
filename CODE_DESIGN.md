@@ -32,7 +32,7 @@
 * `mkdir build`
 * `cd build`
 * `cmake .. -DCMAKE_TOOLCHAIN_FILE=../vcpkg/scripts/buildsystems/vcpkg.cmake`
-* `cmake --build . --config Release`
+* `cmake --build . --config Release -DENABLE_THREAD_SANITIZER=OFF`
 
 # RUN UNIT TESTS
 *   `cd backendify/build`
