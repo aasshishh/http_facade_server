@@ -7,6 +7,7 @@
     *   **`redis-plus-plus`**: A feature-rich client supporting various modes (sync, async, cluster, sentinel) and integrating with event loops like Boost.Asio or libuv.
     *   **`Boost.Redis`**: A header-only, Boost.Asio-based client, ideal for projects already using Boost.
     These libraries enable multiple "in-flight" operations, avoiding the serialization imposed by a single connection with a mutex. Adopting one would involve refactoring the `RedisCache` to use its API, leveraging its built-in concurrency management.
+**Experiment with Memcached:** Investigate using Memcached as an alternative caching backend. This could offer performance benefits and more straightforward asynchronous access compared to the current Redis cache, which relies on the synchronous `hiredis` client.
 
 ## References
 *   [A list of open-source C++ libraries](https://en.cppreference.com/w/cpp/links/libs)
